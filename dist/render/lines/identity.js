@@ -1,0 +1,88 @@
+import { statSync } from "node:fs";
+import { getContextPercent, getBufferedPercent, getTotalTokens, } from "../../stdin.js";
+import { coloredBar, label, getContextColor, RESET } from "../colors.js";
+import { getAdaptiveBarWidth } from "../../utils/terminal.js";
+import { t } from "../../i18n/index.js";
+import { progressLabel } from "./label-align.js";
+const DEBUG = process.env.DEBUG?.includes("claude-hud") || process.env.DEBUG === "*";
+export function renderIdentityLine(ctx, alignLabels = false) {
+    const rawPercent = getContextPercent(ctx.stdin);
+    const bufferedPercent = getBufferedPercent(ctx.stdin);
+    const autocompactMode = ctx.config?.display?.autocompactBuffer ?? "enabled";
+    const percent = autocompactMode === "disabled" ? rawPercent : bufferedPercent;
+    const colors = ctx.config?.colors;
+    if (DEBUG && autocompactMode === "disabled") {
+        console.error(`[claude-hud:context] autocompactBuffer=disabled, showing raw ${rawPercent}% (buffered would be ${bufferedPercent}%)`);
+    }
+    const display = ctx.config?.display;
+    const contextValueMode = display?.contextValue ?? "percent";
+    const contextValue = formatContextValue(ctx, percent, contextValueMode);
+    const contextValueDisplay = `${getContextColor(percent, colors)}${contextValue}${RESET}`;
+    let line = display?.showContextBar !== false
+        ? `${progressLabel("label.context", colors, alignLabels)} ${coloredBar(percent, getAdaptiveBarWidth(), colors)} ${contextValueDisplay}`
+        : `${progressLabel("label.context", colors, alignLabels)} ${contextValueDisplay}`;
+    if (display?.showTranscriptSize) {
+        const bytes = getTranscriptSize(ctx.stdin.transcript_path);
+        if (bytes !== null && bytes > 0) {
+            line += label(` · ${formatTranscriptSize(bytes)}`, colors);
+        }
+    }
+    if (display?.showTokenBreakdown !== false && percent >= 85) {
+        const usage = ctx.stdin.context_window?.current_usage;
+        if (usage) {
+            const input = formatTokens(usage.input_tokens ?? 0);
+            const cache = formatTokens((usage.cache_creation_input_tokens ?? 0) +
+                (usage.cache_read_input_tokens ?? 0));
+            line += label(` (${t("format.in")}: ${input}, ${t("format.cache")}: ${cache})`, colors);
+        }
+    }
+    return line;
+}
+function formatTokens(n) {
+    if (n >= 1000000) {
+        return `${(n / 1000000).toFixed(1)}M`;
+    }
+    if (n >= 1000) {
+        return `${(n / 1000).toFixed(0)}k`;
+    }
+    return n.toString();
+}
+/** Transcript file size in bytes, or null if unavailable. */
+function getTranscriptSize(path) {
+    if (!path)
+        return null;
+    try {
+        return statSync(path).size;
+    }
+    catch {
+        return null;
+    }
+}
+/** Format bytes like the session picker: 2.1KB, 244.1KB, 10.9MB. */
+function formatTranscriptSize(bytes) {
+    if (bytes >= 1024 * 1024) {
+        return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+    }
+    return `${(bytes / 1024).toFixed(1)}KB`;
+}
+function formatContextValue(ctx, percent, mode) {
+    const totalTokens = getTotalTokens(ctx.stdin);
+    const size = ctx.stdin.context_window?.context_window_size ?? 0;
+    if (mode === "tokens") {
+        if (size > 0) {
+            return `${formatTokens(totalTokens)}/${formatTokens(size)}`;
+        }
+        return formatTokens(totalTokens);
+    }
+    if (mode === "both") {
+        if (size > 0) {
+            return `${percent}% (${formatTokens(totalTokens)}/${formatTokens(size)})`;
+        }
+        return `${percent}%`;
+    }
+    if (mode === "remaining") {
+        return `${Math.max(0, 100 - percent)}%`;
+    }
+    return `${percent}%`;
+}
+//# sourceMappingURL=identity.js.map
